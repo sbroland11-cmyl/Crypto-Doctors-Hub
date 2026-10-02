@@ -6844,11 +6844,27 @@ class _FeedPageState extends State<FeedPage> {
     super.initState();
     _localPosts = List<_CommunityPost>.of(_communityFeed.value);
     _communityFeed.addListener(_onLocalFeedChanged);
-    _loadFeed();
-    _feedSubscription = FeedService.watchFeed(limit: 500).listen((posts) {
-      if (!mounted) return;
-      setState(() => _backendPosts = posts);
-    });
+
+    _feedSubscription = FeedService.watchFeed(limit: 500).listen(
+      (posts) {
+        if (!mounted) return;
+
+        setState(() {
+          _backendPosts = posts;
+          _loading = false;
+          _loadError = null;
+        });
+
+        _loadPublicAuthorProfiles(posts);
+      },
+      onError: (Object error) {
+        if (!mounted) return;
+        setState(() {
+          _loading = false;
+          _loadError = error.toString();
+        });
+      },
+    );
   }
 
   void _onLocalFeedChanged() {
@@ -6864,105 +6880,103 @@ class _FeedPageState extends State<FeedPage> {
     super.dispose();
   }
 
+  Future<void> _loadPublicAuthorProfiles(
+    List<FeedPostModel> posts, {
+    bool forceRefresh = false,
+  }) async {
+    final authorUids = posts
+        .where((p) => p.authorUid.trim().isNotEmpty)
+        .map((p) => p.authorUid)
+        .toSet()
+        .where(
+          (uid) => forceRefresh || !_publicAlphaProfiles.containsKey(uid),
+        )
+        .toList();
+
+    if (authorUids.isEmpty) return;
+
+    final publicProfiles = <String, Map<String, dynamic>>{};
+    final publicPremium = <String, bool>{};
+    final publicMentorship = <String, bool>{};
+    final publicPremiumBadges = <String, String>{};
+    final publicMentorshipBadges = <String, String>{};
+    final publicGraduatedByUid = <String, bool>{};
+
+    for (var i = 0; i < authorUids.length; i += 30) {
+      final chunk = authorUids.skip(i).take(30).toList();
+      if (chunk.isEmpty) continue;
+
+      try {
+        final snap = await FirebaseFirestore.instance
+            .collection('users')
+            .where(FieldPath.documentId, whereIn: chunk)
+            .get();
+
+        for (final doc in snap.docs) {
+          final data = doc.data();
+          final raw = data['alphaDenProfile'];
+
+          if (raw is Map) {
+            publicProfiles[doc.id] = Map<String, dynamic>.from(raw);
+          }
+
+          publicPremium[doc.id] = data['isPremium'] == true;
+
+          publicMentorship[doc.id] =
+              data['mentorshipApproved'] == true ||
+              data['isMentorship'] == true ||
+              data['mentorship'] == true ||
+              data['studentApproved'] == true ||
+              data['isStudent'] == true;
+
+          final premiumBadge =
+              (data['confirmedPremiumBadgeType'] ?? '').toString();
+          final mentorshipBadge =
+              (data['confirmedMentorshipBadgeType'] ?? '').toString();
+
+          if (premiumBadge.isNotEmpty) {
+            publicPremiumBadges[doc.id] = premiumBadge;
+          }
+
+          if (mentorshipBadge.isNotEmpty) {
+            publicMentorshipBadges[doc.id] = mentorshipBadge;
+          }
+
+          publicGraduatedByUid[doc.id] = data['graduated'] == true;
+        }
+      } catch (_) {}
+    }
+
+    if (!mounted) return;
+
+    setState(() {
+      _publicAlphaProfiles.addAll(publicProfiles);
+      _publicPremiumByUid.addAll(publicPremium);
+      _publicMentorshipByUid.addAll(publicMentorship);
+      _publicPremiumBadgeByUid.addAll(publicPremiumBadges);
+      _publicMentorshipBadgeByUid.addAll(publicMentorshipBadges);
+      _publicGraduatedByUid.addAll(publicGraduatedByUid);
+    });
+  }
+
   Future<void> _loadFeed() async {
     try {
-      final general = await FeedService.loadFeed(limit: 500);
-      var merged = <String, FeedPostModel>{
-        for (final post in general) post.id: post,
-      };
-
-      // Keep the existing Alpha Den fallback, but never let it control the
-      // lifetime of the Feed widget itself.
-      final user = FirebaseAuth.instance.currentUser;
-      if (user != null) {
-        try {
-          final alpha = await AlphaDenService.loadPosts(user.uid);
-          for (final data in alpha) {
-            final id = (data['id'] ?? '').toString();
-            if (id.isEmpty) continue;
-            merged[id] = FeedPostModel.fromData(id, data);
-          }
-        } catch (_) {
-          // General feed data is still valid if the Alpha Den fallback fails.
-        }
-      }
-
-      final result = merged.values.toList()
-        ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
-
-      // Alpha Den identity is public. Load the current public profile for
-      // Alpha Den authors so Feed shows the nickname beside the crown/tick
-      // and the @username underneath, rather than freezing an old snapshot.
-      final authorUids = result
-          .where((p) => p.authorUid.trim().isNotEmpty)
-          .map((p) => p.authorUid)
-          .toSet()
-          .toList();
-      final publicProfiles = <String, Map<String, dynamic>>{};
-      final publicPremium = <String, bool>{};
-      final publicMentorship = <String, bool>{};
-      final publicPremiumBadges = <String, String>{};
-      final publicMentorshipBadges = <String, String>{};
-      final publicGraduatedByUid = <String, bool>{};
-      for (var i = 0; i < authorUids.length; i += 30) {
-        final chunk = authorUids.skip(i).take(30).toList();
-        if (chunk.isEmpty) continue;
-        try {
-          final snap = await FirebaseFirestore.instance
-              .collection('users')
-              .where(FieldPath.documentId, whereIn: chunk)
-              .get();
-          for (final doc in snap.docs) {
-            final data = doc.data();
-            final raw = data['alphaDenProfile'];
-            if (raw is Map)
-              publicProfiles[doc.id] = Map<String, dynamic>.from(raw);
-            publicPremium[doc.id] = data['isPremium'] == true;
-            publicMentorship[doc.id] =
-                data['mentorshipApproved'] == true ||
-                data['isMentorship'] == true ||
-                data['mentorship'] == true ||
-                data['studentApproved'] == true ||
-                data['isStudent'] == true;
-            final premiumBadge = (data['confirmedPremiumBadgeType'] ?? '')
-                .toString();
-            final mentorshipBadge = (data['confirmedMentorshipBadgeType'] ?? '')
-                .toString();
-            if (premiumBadge.isNotEmpty)
-              publicPremiumBadges[doc.id] = premiumBadge;
-            if (mentorshipBadge.isNotEmpty)
-              publicMentorshipBadges[doc.id] = mentorshipBadge;
-            publicGraduatedByUid[doc.id] = data['graduated'] == true;
-          }
-        } catch (_) {}
-      }
+      // Explicit refresh only. Initial Feed loading is handled by the
+      // realtime listener so we do not perform duplicate startup reads.
+      final posts = await FeedService.loadFeed(limit: 500);
 
       if (!mounted) return;
+
       setState(() {
-        _backendPosts = result;
-        _publicAlphaProfiles
-          ..clear()
-          ..addAll(publicProfiles);
-        _publicPremiumByUid
-          ..clear()
-          ..addAll(publicPremium);
-        _publicMentorshipByUid
-          ..clear()
-          ..addAll(publicMentorship);
-        _publicPremiumBadgeByUid
-          ..clear()
-          ..addAll(publicPremiumBadges);
-        _publicMentorshipBadgeByUid
-          ..clear()
-          ..addAll(publicMentorshipBadges);
-        _publicGraduatedByUid
-          ..clear()
-          ..addAll(publicGraduatedByUid);
+        _backendPosts = posts;
         _loading = false;
         _loadError = null;
       });
+
+      await _loadPublicAuthorProfiles(posts, forceRefresh: true);
     } catch (error) {
       if (!mounted) return;
+
       setState(() {
         _loading = false;
         _loadError = error.toString();
@@ -6972,10 +6986,12 @@ class _FeedPageState extends State<FeedPage> {
 
   Future<void> _refresh() async {
     if (!mounted) return;
+
     setState(() {
       _loading = true;
       _loadError = null;
     });
+
     await _loadFeed();
   }
 
