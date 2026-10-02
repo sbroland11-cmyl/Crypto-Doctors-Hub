@@ -1,0 +1,31 @@
+{
+  "flutter": {
+    "platforms": {
+      "android": {
+        "default": {
+          "projectId": "crypto-doctors-hub",
+          "appId": "1:39039068552:android:841840fe2fb04724ebb23d",
+          "fileOutput": "android/app/google-services.json"
+        }
+      },
+      "dart": {
+        "lib/firebase_options.dart": {
+          "projectId": "crypto-doctors-hub",
+          "configurations": {
+            "android": "1:39039068552:android:841840fe2fb04724ebb23d",
+            "web": "1:39039068552:web:7f5e60b5694b4a97ebb23d"
+          }
+        }
+      }
+    }
+  },
+  "storage": {
+    "rules": "storage.rules"
+  },
+  "firestore": {
+    "rules": "firestore.rules"
+  },
+  "functions": {
+    "source": "functions"
+  }
+}

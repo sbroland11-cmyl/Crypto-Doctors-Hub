@@ -1,0 +1,48 @@
+{
+  "project_info": {
+    "project_number": "39039068552",
+    "project_id": "crypto-doctors-hub",
+    "storage_bucket": "crypto-doctors-hub.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:39039068552:android:cf4d798811c7eb18ebb23d",
+        "android_client_info": {
+          "package_name": "com.cryptodoctors.hub"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyB2SsbSEsQ8u4KFk_qCbZqQFX2gKC7jqqY"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:39039068552:android:841840fe2fb04724ebb23d",
+        "android_client_info": {
+          "package_name": "com.example.crypto_doctors_hub_new"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyB2SsbSEsQ8u4KFk_qCbZqQFX2gKC7jqqY"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

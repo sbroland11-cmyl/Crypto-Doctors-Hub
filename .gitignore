@@ -1,0 +1,66 @@
+# Flutter / Dart generated
+.dart_tool/
+.packages
+.pub/
+.pub-cache/
+build/
+coverage/
+.flutter-plugins
+.flutter-plugins-dependencies
+
+# Node / Firebase Functions dependencies
+functions/node_modules/
+node_modules/
+
+# Android generated/cache
+android/.gradle/
+android/app/build/
+android/local.properties
+
+# Windows generated
+windows/flutter/ephemeral/
+
+# iOS / macOS generated dependencies
+ios/Pods/
+macos/Pods/
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs / analyzer / debug output
+*.log
+*.tmp
+*.bak
+analyze_result.txt
+analyzer.txt
+build_error.txt
+issue1_page_lifecycle_scan.txt
+issue1_probe_auth_scan.txt
+
+# Old source backups / temporary copies
+lib/main.dart.*BACKUP*
+lib/main.dart.*backup*
+lib/main.dart.orig
+lib/main.dart.pre_*
+lib/main_before_*.dart
+
+# Old project archives
+lib.zip
+scripts.zip
+CDH_REFERRAL_AUTOMATION_FINAL_*.zip
+
+# CDH debugging scans
+issue1_*.txt
+
+# Local Dart backup copies
+lib/services/*.orig
+lib/services/*BACKUP*.dart
+lib/services/*PRE_*.dart
+lib/services/*BEFORE_*.dart
+lib/services/* back.dart

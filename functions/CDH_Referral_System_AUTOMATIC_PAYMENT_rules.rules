@@ -1,0 +1,527 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // =========================================================
+    // HELPER FUNCTIONS
+    // =========================================================
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    // Admin authorization comes from Firebase Authentication
+    // custom claims, NOT from an editable Firestore field.
+    function isAdmin() {
+      return signedIn()
+             && request.auth.token.admin == true;
+    }
+
+    // Only the Crypto Doctors 73 admin account can publish
+    // official CD Analysis posts.
+    function isAnalysisPublisher() {
+      return isAdmin()
+             && request.auth.token.email
+                == 'cryptodoctors73@gmail.com';
+    }
+
+    // =========================================================
+    // USER PROFILES
+    // =========================================================
+
+    match /users/{userId} {
+
+      // A signed-in user can create only their own profile.
+      allow create: if signedIn()
+                    && request.auth.uid == userId
+                    && (
+                      !request.resource.data.keys().hasAny(['referredByUid', 'referredByCode'])
+                      || request.resource.data.referredByUid == null
+                      || (
+                        request.resource.data.referredByUid is string
+                        && request.resource.data.referredByUid != request.auth.uid
+                        && request.resource.data.referredByCode is string
+                        && request.resource.data.referredByCode != ''
+                        && get(/databases/$(database)/documents/users/$(request.resource.data.referredByUid)).data.referralCode
+                           == request.resource.data.referredByCode
+                      )
+                    );
+
+      // Authenticated users can read user documents.
+      // Required by the current Alpha Den/public profile flow,
+      // Premium-status display and username lookup.
+      allow read: if signedIn();
+
+      // A user may update their own profile.
+      // Administrative / Premium authorization fields are protected
+      // from client-side self-approval.
+      // Admins with admin=true may change those fields.
+      allow update: if signedIn()
+                    && request.auth.uid == userId
+                    && (
+                      isAdmin()
+                      ||
+                      !request.resource.data.diff(resource.data)
+                        .affectedKeys()
+                        .hasAny([
+                          'role',
+                          'verified',
+                          'verifiedCreatorApproved',
+                          'isPremium',
+                          'premiumApprovedAt',
+                          'referralCode',
+                          'referredByUid',
+                          'referredByCode'
+                        ])
+                    );
+
+      // User deletion remains disabled.
+      allow delete: if false;
+
+      // =======================================================
+      // ALPHA DEN REPOSTS
+      // =======================================================
+
+      match /alphaDenReposts/{postId} {
+        allow read: if signedIn()
+                    && request.auth.uid == userId;
+
+        allow create: if signedIn()
+                      && request.auth.uid == userId
+                      && request.resource.data.reposterUid
+                         == request.auth.uid;
+
+        allow update: if false;
+
+        allow delete: if signedIn()
+                      && request.auth.uid == userId;
+      }
+
+      // =======================================================
+      // APP AVATAR SUBCOLLECTION
+      // =======================================================
+
+      match /appAvatar/{avatarId} {
+        allow read, write: if signedIn()
+                          && request.auth.uid == userId;
+      }
+
+      // =======================================================
+      // TRADING JOURNAL
+      // =======================================================
+
+      // Personal journal participation is private to the owner.
+      // Admins must not read another user's private journal through
+      // the normal user-facing Journal.
+      match /tradingJournal/{entryId} {
+        allow read: if signedIn() && request.auth.uid == userId;
+
+        allow create: if signedIn()
+                      && request.auth.uid == userId
+                      && request.resource.data.liveCallId == entryId
+                      && request.resource.data.tookTrade == true
+                      && request.resource.data.interaction in ['like', 'dislike']
+                      && request.resource.data.status == 'OPEN';
+
+        // The owner may change only their participation interaction while
+        // the entry is still OPEN. An admin may perform the single official
+        // OPEN -> CLOSED transition and cannot alter a closed record later.
+        allow update: if signedIn() && (
+          (
+            request.auth.uid == userId
+            && resource.data.status == 'OPEN'
+            && request.resource.data.status == 'OPEN'
+            && request.resource.data.liveCallId == resource.data.liveCallId
+            && request.resource.data.tookTrade == true
+            && request.resource.data.interaction in ['like', 'dislike']
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['interaction','updatedAt'])
+          )
+          ||
+          (
+            isAdmin()
+            && resource.data.status == 'OPEN'
+            && request.resource.data.status == 'CLOSED'
+            && request.resource.data.liveCallId == entryId
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+              'officialResult','resultPercentage','finalProfitPercentage','closedGreen','status','closedAt'
+            ])
+          )
+        );
+
+        allow delete: if false;
+      }
+
+      // Private task settings and calculator inputs.
+      match /journalSettings/{settingId} {
+        allow read, write: if signedIn() && request.auth.uid == userId;
+      }
+
+      // Private calendar-based daily history. Historical documents are
+      // retained and cannot be deleted by the client.
+      match /journalDays/{dayId} {
+        allow read: if signedIn() && request.auth.uid == userId;
+        allow create, update: if signedIn() && request.auth.uid == userId;
+        allow delete: if false;
+      }
+
+      // Stored private daily/monthly/yearly performance aggregates.
+      // The app reads only the owner's aggregates; official Live Call
+      // closure writes them through an authenticated admin transition.
+      match /journalAggregates/{aggregateId} {
+        allow read: if signedIn() && request.auth.uid == userId;
+        allow create, update: if isAdmin();
+        allow delete: if false;
+      }
+
+      // Private in-app notification records.
+      match /notifications/{notificationId} {
+        allow read: if signedIn() && request.auth.uid == userId;
+        allow create: if signedIn() && request.auth.uid == userId;
+        allow update: if signedIn() && request.auth.uid == userId;
+        allow delete: if false;
+      }
+
+    }
+
+    // =========================================================
+    // PUBLIC COMMUNITY JOURNAL AGGREGATES
+    // =========================================================
+    match /journalCommunityAggregates/{aggregateId} {
+      allow read: if signedIn();
+      allow create, update: if isAdmin();
+      allow delete: if false;
+    }
+
+    // =========================================================
+    // REFERRAL PAYMENT DETAILS
+    // =========================================================
+
+    match /referral_payment_details/{userId} {
+      allow create: if signedIn()
+                    && request.auth.uid == userId;
+
+      allow read: if signedIn()
+                  && (
+                    request.auth.uid == userId
+                    || isAdmin()
+                  );
+
+      allow update: if signedIn()
+                    && request.auth.uid == userId;
+
+      allow delete: if false;
+    }
+
+    // =========================================================
+    // CD FEED POSTS
+    // =========================================================
+
+    match /feed_posts/{postId} {
+      allow read: if signedIn()
+                  && resource.data.isPublished == true;
+
+      allow create: if signedIn()
+                    && request.resource.data.authorUid
+                       == request.auth.uid;
+
+      allow update: if signedIn()
+                    && (
+                      (
+                        resource.data.authorUid == request.auth.uid
+                        && request.resource.data.authorUid == request.auth.uid
+                      )
+                      ||
+                      (
+                        request.resource.data.diff(resource.data)
+                          .affectedKeys()
+                          .hasOnly(['repostsCount'])
+                        && (
+                          request.resource.data.repostsCount
+                            == resource.data.repostsCount + 1
+                          ||
+                          request.resource.data.repostsCount
+                            == resource.data.repostsCount - 1
+                        )
+                      )
+                    );
+
+      allow delete: if signedIn()
+                    && resource.data.authorUid == request.auth.uid;
+
+      match /comments/{commentId} {
+        allow read: if signedIn();
+
+        allow create: if signedIn()
+                      && request.resource.data.authorUid
+                         == request.auth.uid;
+
+        allow update: if signedIn()
+                      && request.resource.data.authorUid
+                         == resource.data.authorUid
+                      && request.resource.data.diff(resource.data)
+                         .affectedKeys()
+                         .hasOnly(['likes'])
+                      && (
+                        request.resource.data.likes
+                          == resource.data.likes + 1
+                        ||
+                        request.resource.data.likes
+                          == resource.data.likes - 1
+                      );
+
+        allow delete: if signedIn()
+                      && resource.data.authorUid == request.auth.uid;
+      }
+
+      match /reposts/{reposterUid} {
+        allow read: if signedIn();
+
+        allow create: if signedIn()
+                      && request.auth.uid == reposterUid;
+
+        allow update: if false;
+
+        allow delete: if signedIn()
+                      && request.auth.uid == reposterUid;
+      }
+    }
+
+    // =========================================================
+    // OFFICIAL CD ANALYSIS POSTS
+    // =========================================================
+
+    match /analysis_posts/{analysisId} {
+      allow read: if signedIn();
+
+      allow create: if isAnalysisPublisher()
+                    && request.resource.data.authorUid
+                       == request.auth.uid
+                    && request.resource.data.isPublished == true;
+
+      allow update: if isAnalysisPublisher()
+                    && resource.data.authorUid == request.auth.uid
+                    && request.resource.data.authorUid == request.auth.uid;
+
+      allow delete: if isAnalysisPublisher()
+                    && resource.data.authorUid == request.auth.uid;
+    }
+
+    // =========================================================
+    // LIVE CALLS
+    // =========================================================
+    //
+    // Published Live Calls are readable by signed-in users.
+    // This matches the current app behavior where Free users can
+    // see later calls as locked cards while Premium users can open
+    // them. The actual Premium UI is controlled by the protected
+    // users/{uid}.isPremium field above.
+    //
+    // Only an authenticated admin can create, edit, manage TP/SL
+    // results, or close a Live Call.
+    //
+    // The app currently stores the full signal document in one
+    // live_calls document, so the write rule intentionally grants
+    // the complete Live Call write only to admins rather than trying
+    // to validate every client-side display field independently.
+
+    match /live_calls/{liveCallId} {
+
+      // Signed-in users can read published Live Calls.
+      allow read: if signedIn()
+                  && resource.data.isPublished == true;
+
+      // Only admins can publish Live Calls.
+      allow create: if isAdmin()
+                    && request.resource.data.isPublished == true;
+
+      // Only admins can edit signal data, TP/SL results, and close
+      // a Live Call.
+      allow update: if isAdmin()
+                    && (
+                      resource.data.tradeClosed != true
+                      || (
+                        resource.data.tradeClosed == false
+                        && request.resource.data.tradeClosed == true
+                        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+                          'tradeClosed','closedGreen','finalProfitPercentage','resultPercentage','officialResult','closedAt'
+                        ])
+                      )
+                    );
+
+      // Client-side deletion remains disabled.
+      allow delete: if false;
+
+      // =======================================================
+      // LIVE CALL PARTICIPANTS
+      // =======================================================
+      //
+      // A participant document belongs to the signed-in user.
+      // A user must first mark that they took the trade before a
+      // dislike can be recorded. The current app writes:
+      //   uid, tookTrade, reaction, updatedAt
+      //
+      match /participants/{participantUid} {
+
+        allow read: if signedIn()
+                    && (
+                      request.auth.uid == participantUid
+                      || isAdmin()
+                    );
+
+        allow create: if signedIn()
+                      && request.auth.uid == participantUid
+                      && request.resource.data.uid == request.auth.uid
+                      && request.resource.data.tookTrade == true
+                      && request.resource.data.reaction in ['like', 'dislike'];
+
+        allow update: if signedIn()
+                      && request.auth.uid == participantUid
+                      && request.resource.data.uid == request.auth.uid
+                      && request.resource.data.tookTrade == true
+                      && request.resource.data.reaction in ['like', 'dislike']
+                      && (
+                        request.resource.data.reaction == 'like'
+                        || resource.data.tookTrade == true
+                      )
+                      && request.resource.data.diff(resource.data)
+                         .affectedKeys()
+                         .hasOnly([
+                           'uid',
+                           'tookTrade',
+                           'reaction',
+                           'updatedAt'
+                         ]);
+
+        allow delete: if signedIn()
+                      && request.auth.uid == participantUid;
+      }
+    }
+
+    // =========================================================
+    // CONTENT REPORTS
+    // =========================================================
+
+    match /content_reports/{reportId} {
+      allow create: if signedIn()
+                    && request.resource.data.reporterUid
+                       == request.auth.uid
+                    && (
+                      request.resource.data.type == 'post'
+                      || request.resource.data.type == 'comment'
+                    )
+                    && request.resource.data.reason is string;
+
+      allow read: if isAdmin();
+      allow update: if false;
+      allow delete: if false;
+    }
+
+    // =========================================================
+    // REFERRAL SYSTEM
+    // =========================================================
+    // Referral relationships and reward records are backend-owned.
+    // Clients may read records relevant to their own account, but cannot
+    // create, edit, delete or manufacture qualification/reward events.
+
+    match /referralSettings/{settingId} {
+      allow read: if signedIn();
+      allow create, update: if isAdmin();
+      allow delete: if false;
+    }
+
+    match /referralRelationships/{referredUid} {
+      allow read: if signedIn()
+                  && (
+                    request.auth.uid == referredUid
+                    || resource.data.referrerUid == request.auth.uid
+                    || isAdmin()
+                  );
+      allow create, update, delete: if false;
+    }
+
+    match /referralRewards/{rewardId} {
+      allow read: if signedIn()
+                  && (
+                    resource.data.referrerUid == request.auth.uid
+                    || resource.data.referredUid == request.auth.uid
+                    || isAdmin()
+                  );
+      allow create, update, delete: if false;
+    }
+
+    match /referralMonthlyCycles/{cycleId} {
+      allow read: if signedIn()
+                  && (
+                    resource.data.referrerUid == request.auth.uid
+                    || resource.data.referredUid == request.auth.uid
+                    || isAdmin()
+                  );
+      allow create, update, delete: if false;
+    }
+
+    // =========================================================
+    // CENTRAL PAYMENT CONFIGURATION
+    // =========================================================
+    // Signed-in users can read the live payment configuration.
+    // Only Firebase custom-claim admins can create or update it.
+    match /paymentSettings/{settingId} {
+      allow read: if signedIn();
+      allow create, update: if isAdmin();
+      allow delete: if false;
+    }
+
+    // =========================================================
+    // AUTOMATIC PAYMENT ORDERS / TRANSACTIONS
+    // =========================================================
+    // A client may create only a pending order for itself. The client cannot
+    // choose an arbitrary amount, destination, network or entitlement.
+    // Blockchain-confirmed transactions are written only by the backend.
+
+    match /paymentRequests/{requestId} {
+      allow create: if signedIn()
+                    && request.resource.data.requestId == requestId
+                    && request.resource.data.userId == request.auth.uid
+                    && request.resource.data.product in ['premium', 'mentorship']
+                    && request.resource.data.planId in [
+                      'premium_monthly',
+                      'premium_one_time',
+                      'mentorship_one_time',
+                      'mentorship_installment'
+                    ]
+                    && request.resource.data.network in ['trc20', 'bep20', 'erc20']
+                    && request.resource.data.status == 'requested';
+      allow read: if signedIn()
+                  && (resource.data.userId == request.auth.uid || isAdmin());
+      allow update, delete: if false;
+    }
+
+    match /paymentOrders/{orderId} {
+      // Payment orders are created only by the trusted backend after it has
+      // assigned a unique amount. The client can only read its own order.
+      allow read: if signedIn()
+                  && (resource.data.userId == request.auth.uid || isAdmin());
+      allow create, update, delete: if false;
+    }
+
+    match /paymentTransactions/{transactionId} {
+      allow read: if signedIn()
+                  && (
+                    resource.data.userId == request.auth.uid
+                    || isAdmin()
+                  );
+      allow create, update, delete: if false;
+    }
+
+    match /paymentScannerState/{stateId} {
+      allow read, write: if false;
+    }
+
+    match /paymentAmountLocks/{lockId} {
+      allow read, write: if false;
+    }
+
+    // No catch-all allow rule is present.
+    // Any collection/path not explicitly allowed above is denied.
+  }
+}
