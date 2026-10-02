@@ -38572,8 +38572,46 @@ class _LiveMarketStore {
   static const _url =
       'https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=100&page=1&sparkline=false&price_change_percentage=24h';
   static const _binanceUrl = 'https://api.binance.com/api/v3/ticker/24hr';
+  static const Duration _cacheFreshFor = Duration(seconds: 25);
 
-  static Future<List<_MarketAsset>> fetchTop100() async {
+  static List<_MarketAsset>? _cachedAssets;
+  static DateTime? _cachedAt;
+  static Future<List<_MarketAsset>>? _inFlight;
+
+  static List<_MarketAsset>? get cachedAssets => _cachedAssets;
+
+  static bool get _hasFreshCache {
+    final cachedAt = _cachedAt;
+    final cached = _cachedAssets;
+    if (cachedAt == null || cached == null || cached.isEmpty) return false;
+    return DateTime.now().difference(cachedAt) < _cacheFreshFor;
+  }
+
+  static void _remember(List<_MarketAsset> assets) {
+    if (assets.isEmpty) return;
+    _cachedAssets = List<_MarketAsset>.unmodifiable(assets);
+    _cachedAt = DateTime.now();
+  }
+
+  static Future<List<_MarketAsset>> fetchTop100({
+    bool forceRefresh = false,
+  }) {
+    if (!forceRefresh && _hasFreshCache) {
+      return Future<List<_MarketAsset>>.value(_cachedAssets!);
+    }
+
+    final activeRequest = _inFlight;
+    if (activeRequest != null) return activeRequest;
+
+    final request = _fetchTop100Network();
+    _inFlight = request;
+    request.whenComplete(() {
+      if (identical(_inFlight, request)) _inFlight = null;
+    });
+    return request;
+  }
+
+  static Future<List<_MarketAsset>> _fetchTop100Network() async {
     try {
       final response = await html.HttpRequest.request(
         _url,
@@ -38591,11 +38629,32 @@ class _LiveMarketStore {
               )
               .where((asset) => asset.price > 0)
               .toList();
-          if (assets.length >= 4) return assets;
+          if (assets.length >= 4) {
+            _remember(assets);
+            return _cachedAssets!;
+          }
         }
       }
-    } catch (_) {}
-    return _fetchFromBinance();
+    } catch (_) {
+      // Try the Binance fallback below. If that also fails, the last
+      // successful snapshot remains available to the UI.
+    }
+
+    try {
+      final assets = await _fetchFromBinance();
+      if (assets.isNotEmpty) {
+        _remember(assets);
+        return _cachedAssets!;
+      }
+    } catch (_) {
+      final cached = _cachedAssets;
+      if (cached != null && cached.isNotEmpty) return cached;
+      rethrow;
+    }
+
+    final cached = _cachedAssets;
+    if (cached != null && cached.isNotEmpty) return cached;
+    throw Exception('Live market services are temporarily unavailable.');
   }
 
   static String _logoUrlForSymbol(String symbol) {
@@ -38742,16 +38801,27 @@ class LiveMarketPreview extends StatefulWidget {
   State<LiveMarketPreview> createState() => _LiveMarketPreviewState();
 }
 
-class _LiveMarketPreviewState extends State<LiveMarketPreview> {
+class _LiveMarketPreviewState extends State<LiveMarketPreview>
+    with AutomaticKeepAliveClientMixin<LiveMarketPreview> {
   List<_MarketAsset>? _marketData;
   Timer? _marketTimer;
   bool _initialLoading = true;
   bool _backgroundRefreshRunning = false;
 
   @override
+  bool get wantKeepAlive => true;
+
+  @override
   void initState() {
     super.initState();
-    unawaited(_loadInitialMarket());
+    final cached = _LiveMarketStore.cachedAssets;
+    if (cached != null && cached.isNotEmpty) {
+      _marketData = cached;
+      _initialLoading = false;
+      unawaited(_refreshInBackground());
+    } else {
+      unawaited(_loadInitialMarket());
+    }
     _marketTimer = Timer.periodic(const Duration(seconds: 30), (_) {
       unawaited(_refreshInBackground());
     });
@@ -38778,7 +38848,7 @@ class _LiveMarketPreviewState extends State<LiveMarketPreview> {
     if (!mounted || _backgroundRefreshRunning) return;
     _backgroundRefreshRunning = true;
     try {
-      final latest = await _LiveMarketStore.fetchTop100();
+      final latest = await _LiveMarketStore.fetchTop100(forceRefresh: true);
       if (!mounted || latest.isEmpty) return;
       setState(() {
         // Keep the existing tiles mounted while only their values update.
@@ -38808,6 +38878,7 @@ class _LiveMarketPreviewState extends State<LiveMarketPreview> {
 
   @override
   Widget build(BuildContext context) {
+    super.build(context);
     final data = _marketData;
     if (data == null && _initialLoading) {
       return const SizedBox(
